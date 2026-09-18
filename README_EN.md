@@ -18,7 +18,7 @@ opencode-worker-plugin turns opencode into an async multi-agent orchestrator. Th
 - **Async concurrency** — Spawn multiple workers in parallel without blocking the main agent
 - **Feedback groups** — Group workers together; the parent is woken once when all group members finish
 - **Worker lifecycle management** — Spawn, send, read, interrupt, shutdown, list
-- **Reasoning tiers** — Five depth levels: low / medium / high / xhigh / max
+- **Variants** — The required `worker_spawn` `variant` parameter (low/medium/high/xhigh/max) controls reasoning depth on every prompt — no pre-registered tier agents
 - **Timers** — Schedule wake-up notifications for polling or deadlines
 - **notify_parent** — Workers proactively report blockers to their parent
 - **Dual backend** — Built-in OpenCode sessions (default) and optional external agy CLI processes
@@ -91,14 +91,14 @@ bash install.sh --local --uninstall
 
 > "Use the designer agent to decompose this task into parallel subtasks: ..."
 
-All tools (`worker_spawn`, etc.) and agents (`worker`, `worker-low`, `designer`, etc.) appear automatically — no configuration needed.
+All tools (`worker_spawn`, etc.) and agents (`worker`, `designer`) appear automatically — no configuration needed.
 
 ## Tool reference
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `worker_spawn` | prompt, title, group, model, agent | Create and start a background worker subagent. `title` is a unique name, `group` enables feedback batching |
-| `worker_send` | id, text, model | Send a new instruction to a worker (queued if busy), optionally switching the model |
+| `worker_spawn` | prompt, title, group, model, agent, variant | Create and start a background worker subagent. `title` is a unique name, `group` enables feedback batching, `variant` is required (low/medium/high/xhigh/max) |
+| `worker_send` | id, text, model, variant | Send a new instruction to a worker (queued if busy), optionally switching the model. Optional `variant` overrides the worker's reasoning effort (agy backend only effective when restarting) |
 | `worker_read` | id, tail, limit | Read a worker's recent conversation history |
 | `worker_list` | (none) | List all active workers and their statuses |
 | `worker_interrupt` | id | Interrupt a worker's current operation (preserves context) |
@@ -108,6 +108,10 @@ All tools (`worker_spawn`, etc.) and agents (`worker`, `worker-low`, `designer`,
 | `notify_parent` | message | (used inside a worker) Proactively wake the parent agent with information |
 
 ## Concepts
+
+### Variant
+
+The required `worker_spawn` `variant` parameter (low/medium/high/xhigh/max) controls reasoning depth on every prompt. If the OpenCode backend model doesn't support the tier, it silently falls back to the model's default. For the agy backend, it maps to `--effort`, with xhigh/max clamped to high.
 
 ### Feedback Groups
 
@@ -139,12 +143,9 @@ The following agents are registered automatically on install:
 | Agent | Description |
 |-------|-------------|
 | `worker` | Default worker with general execution capability |
-| `worker-low` | Low reasoning depth (fast) |
-| `worker-medium` | Medium reasoning depth |
-| `worker-high` | High reasoning depth |
-| `worker-xhigh` | Extra-high reasoning depth |
-| `worker-max` | Maximum reasoning depth |
 | `designer` | Orchestrator agent that decomposes tasks and dispatches to workers |
+
+Variants are no longer controlled via `worker-xx` agents (removed in v0.2.0); pass the required `variant` parameter to `worker_spawn` instead.
 
 If the user has already defined a `worker` or `designer` agent in `opencode.json` or `~/.config/opencode/agent/*.md`, the plugin will not override it.
 
@@ -156,6 +157,7 @@ The plugin supports an external `agy` CLI as a worker backend. To use it:
 2. Set `WORKER_PLUGIN_AGY_BINARY` if `agy` is not on your PATH
 3. Spawn workers with model refs in the format `agy/<slug>`, e.g. `agy/gemini-3.8-flash-high`
 4. Use the `models()` tool to discover available agy model slugs
+5. Variant mapping: low/medium/high → `--effort`; xhigh/max clamped to high
 
 ## Requirements
 
@@ -173,6 +175,10 @@ Opencode automatically loads all `.ts` and `.js` files from `~/.config/opencode/
 ### Is there an npm package?
 
 Planned. For now, install via the script or by copying the file manually.
+
+### Upgrading from an older version?
+
+v0.2.0 removed the `worker-xx` tier agents; use the required `variant` parameter instead (`agent: "worker-max"` → `variant: "max"`).
 
 ### Does it send my data anywhere?
 

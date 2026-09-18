@@ -214,8 +214,10 @@ Restart opencode to activate. The following will appear automatically:
   Tools       — worker_spawn, worker_send, worker_read,
                 worker_list, worker_interrupt, worker_shutdown,
                 models(), set_timer, notify_parent
-  Agents      — worker, worker-low, worker-medium, worker-high,
-                worker-xhigh, worker-max, designer
+  Agents      — worker, designer
+  Variants    — required worker_spawn parameter:
+                low / medium / high / xhigh / max
+                (agy workers: xhigh/max are clamped to high)
 
 To pin a specific version (e.g. v0.2.0):
   curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/install.sh \\

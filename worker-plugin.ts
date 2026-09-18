@@ -3,6 +3,7 @@ import type { SessionPromptAsyncData } from "@opencode-ai/sdk"
 import { spawn, type ChildProcess } from "node:child_process"
 import { createInterface } from "node:readline"
 
+// Valid values for the variant parameter (worker_spawn / worker_send)
 const VARIANTS = ["low", "medium", "high", "xhigh", "max"] as const
 const DEFAULT_AGENT = "worker"
 const DESIGNER_AGENT = "designer"
@@ -13,7 +14,7 @@ const NAME_LIMIT = 40
 const AGY_BINARY = process.env.WORKER_PLUGIN_AGY_BINARY ?? "agy"
 const AGY_PREFIX = "agy/"
 const AGY_MODELS_TIMEOUT = 15_000
-const WORKER_PLUGIN_VERSION = "0.1.0"
+const WORKER_PLUGIN_VERSION = "0.2.0"
 
 type WorkerStatus = "starting" | "busy" | "idle" | "retry" | "error" | "interrupted"
 
@@ -60,6 +61,7 @@ type Worker = {
   title: string
   agent: string
   model?: string
+  variant?: string
   backend: Backend
   parentID?: string
   parentState: ParentSessionState
@@ -123,16 +125,17 @@ const slugify = (name: string): string => {
 }
 
 const mapAgentToAgyArgs = (agent: string | undefined): string[] => {
+  // agent undefined or "worker" (DEFAULT_AGENT) → no special args
   if (!agent || agent === DEFAULT_AGENT) return []
-  // Check if it matches OpenCode tier names
-  const tierMatch = agent.match(/^worker-(low|medium|high|xhigh|max)$/)
-  if (tierMatch) {
-    const tier = tierMatch[1] as string
-    const effort = (tier === "xhigh" || tier === "max") ? "high" : tier
-    return ["--effort", effort]
-  }
   // Custom agent name — pass as --agent
   return ["--agent", agent]
+}
+
+const variantToEffortArgs = (variant: string | undefined): string[] => {
+  if (!variant) return []
+  // agy only supports low|medium|high; clamp xhigh/max down to high
+  const effort = variant === "xhigh" || variant === "max" ? "high" : variant
+  return ["--effort", effort]
 }
 
 const WORKER_RULES = `<worker-plugin-system>
@@ -142,7 +145,7 @@ You have async worker subagents via the worker-plugin:
 - \`models()\` — List all available models from both OpenCode and agy backends. Returns grouped entries in a format directly usable with \`worker_spawn.model\`. OpenCode models as \`provider/model\` (e.g. \`epicrouter/deepseek-v4-flash\`), agy models as \`agy/<slug>\` (e.g. \`agy/gemini-3.8-flash-high\`). No API calls or token consumption.
 - \`worker_spawn(prompt, title, group, model, agent?)\` — Spawn a worker, returns immediately with its semantic name. \`title\` is a short unique name you choose (semantic, e.g. "auth-refactor"). \`group\` is a required feedback group id: when ALL workers of a group finish, you are woken once with a summary of which workers completed.
   - **OpenCode backend (default):** \`model\` format \`provider/model-id\` (e.g. \`epicrouter/deepseek-v4-flash\`), creates an internal sub-session.
-  - **External agy backend:** \`model\` starts with \`agy/\` followed by a bare model slug (e.g. \`agy/gemini-3.8-flash-high\`). The worker runs as a local child process via the Antigravity CLI (\`agy\`). Agent tier names (e.g. \`worker-high\`) map to \`--effort high\`; custom agents pass as \`--agent\`.
+  - **External agy backend:** \`model\` starts with \`agy/\` followed by a bare model slug (e.g. \`agy/gemini-3.8-flash-high\`). The worker runs as a local child process via the Antigravity CLI (\`agy\`). \`'variant'\` is required and must be one of low/medium/high/xhigh/max — it controls the worker's reasoning effort on every prompt (agy workers: mapped to --effort, xhigh/max clamped to high). \`'agent'\` selects the worker agent (default \"worker\").
 - \`worker_read(name)\` / \`worker_send(name, text)\` / \`worker_interrupt(name)\` / \`worker_shutdown(name)\` / \`worker_list()\` — Manage workers. All accept the semantic name or the worker id.
 - \`set_timer(time, message)\` — Async: after \`time\` seconds, wake this session once with \`message\`.
 - Workers can call \`notify_parent(message)\` to proactively wake you (OpenCode workers only; agy workers cannot call this tool).
@@ -371,6 +374,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
         body: {
           agent: w.agent,
           ...(providerID && modelID ? { model: { providerID, modelID } } : {}),
+          ...(w.variant ? { variant: w.variant } : {}),
           parts: [{ type: "text", text }],
         },
       })
@@ -509,6 +513,8 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
       // Map agent to agy flags
       const agentArgs = mapAgentToAgyArgs(agent)
       args.push(...agentArgs)
+      // Map variant to agy --effort
+      args.push(...variantToEffortArgs(w.variant))
 
       let proc: ChildProcess
       try {
@@ -674,23 +680,10 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
         knownAgents.add(DEFAULT_AGENT)
       }
 
-      const base = cfg.agent[DEFAULT_AGENT]
-      for (const v of VARIANTS) {
-        const name = `worker-${v}`
-        if (cfg.agent[name]) continue
-        cfg.agent[name] = {
-          ...base,
-          mode: "subagent",
-          variant: v,
-          description: `${base.description ?? DEFAULT_AGENT} (reasoning variant: ${v})`,
-        }
-        knownAgents.add(name)
-      }
-
       if (!cfg.agent[DESIGNER_AGENT]) {
         const primaryBase = cfg.agent[PRIMARY_BASE] ?? cfg.agent[DEFAULT_AGENT]
         const description =
-          "Designer/orchestrator agent. Plans work, splits it into fully-specified subtasks, and dispatches them asynchronously through the worker-plugin tools (worker_spawn / worker_send / worker_read / worker_interrupt / worker_shutdown / worker_list / models, set_timer, notify_parent) instead of blocking subagent task calls. Spawn workers with a unique semantic title, a required model name, and a required feedback group id; continue productive work; you are woken automatically when a whole group finishes or a timer fires."
+          "Designer/orchestrator agent. Plans work, splits it into fully-specified subtasks, and dispatches them asynchronously through the worker-plugin tools (worker_spawn / worker_send / worker_read / worker_interrupt / worker_shutdown / worker_list / models, set_timer, notify_parent) instead of blocking subagent task calls. Spawn workers with a unique semantic title, a required model name, a required variant (low/medium/high/xhigh/max), and a required feedback group id; continue productive work; you are woken automatically when a whole group finishes or a timer fires."
         cfg.agent[DESIGNER_AGENT] = primaryBase
           ? { ...primaryBase, mode: "primary", description }
           : { mode: "primary", description }
@@ -755,7 +748,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
           `  - Format 'provider/model-id' (e.g. 'epicrouter/deepseek-v4-flash') → OpenCode internal sub-session (default).\n` +
           `  - Format 'agy/<slug>' (e.g. 'agy/gemini-3.8-flash-high') → external agy CLI process.\n` +
           `Use worker_read to inspect the conversation, worker_send to queue more instructions, worker_interrupt to stop the current turn, worker_shutdown to close it.\n` +
-          `Pass agent like 'worker-high'/'worker-medium'/'worker-low' for reasoning tiers, or 'worker' for the base config. For agy workers, tier names map to --effort and custom agents pass as --agent.`,
+          `The required 'variant' parameter (low/medium/high/xhigh/max) controls the reasoning effort for every prompt of this worker (OpenCode backend: passed per-prompt; agy backend: mapped to --effort, xhigh/max clamped to high). 'agent' selects a worker agent (default "worker"; custom names must exist in your config).`,
         args: {
           prompt: tool.schema.string().describe("Initial instruction for the worker"),
           title: tool.schema
@@ -773,12 +766,14 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             "  - OpenCode: format 'provider/model-id' (e.g. 'epicrouter/deepseek-v4-flash').\n" +
             "  - Agy external: format 'agy/<slug>' (e.g. 'agy/gemini-3.8-flash-high'). Required.",
           ),
-          agent: tool.schema.string().optional().describe(`Worker agent name, default "${DEFAULT_AGENT}". For agy: tier names → --effort, custom → --agent.`),
+          agent: tool.schema.string().optional().describe(`Worker agent name, default "${DEFAULT_AGENT}". Custom names must exist in your opencode config.`),
+          variant: tool.schema.string().describe("Required reasoning variant: low | medium | high | xhigh | max. Applied to every prompt of this worker. For agy workers xhigh/max are clamped to high."),
         },
         async execute(args, ctx) {
           if (!args.title || !args.title.trim()) return "failed: 'title' (semantic worker name) is required"
           if (!args.group || !args.group.trim()) return "failed: 'group' (feedback group id) is required"
           if (!args.model || !args.model.trim()) return "failed: 'model' is required"
+          if (!args.variant || !VARIANTS.includes(args.variant as any)) return "failed: 'variant' is required and must be one of: low, medium, high, xhigh, max"
           const agent = args.agent ?? DEFAULT_AGENT
 
           // Detect backend from model prefix
@@ -805,6 +800,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
               title,
               agent,
               model: args.model,
+              variant: args.variant,
               backend: "agy",
               parentID: ctx.sessionID,
               parentState,
@@ -843,7 +839,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             if (w.status === "error") {
               return `agy worker ${name} (${id}) failed to start: ${w.error}. Inspect with worker_read or retry with worker_send.`
             }
-            return `external agy worker started: ${name} (id: ${id}, model=${args.model}, agent=${agent}, group=${w.group}).`
+            return `external agy worker started: ${name} (id: ${id}, model=${args.model}, agent=${agent}, variant=${args.variant}, group=${w.group}).`
           }
 
           // ── OpenCode internal worker (existing path) ────────────────
@@ -859,6 +855,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             title,
             agent,
             model: args.model,
+            variant: args.variant,
             backend: "opencode",
             parentID: ctx.sessionID,
             parentState,
@@ -885,7 +882,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             knownAgents.size > 0 && !knownAgents.has(agent)
               ? ` WARNING: agent "${agent}" is not in config, the server may reject it (check worker_list for status).`
               : ""
-          return `worker started: ${name} (session: ${id}, agent=${agent}, model=${args.model}, group=${w.group}).${warn}`
+          return `worker started: ${name} (session: ${id}, agent=${agent}, model=${args.model}, variant=${args.variant}, group=${w.group}).${warn}`
         },
       }),
 
@@ -926,6 +923,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
                   group: w.group,
                   agent: w.agent,
                   model: w.model,
+                  variant: w.variant ?? null,
                   retry: w.retry,
                   error: w.error,
                   turns: w.turns,
@@ -977,6 +975,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
                 group: w.group,
                 agent: w.agent,
                 model: w.model,
+                variant: w.variant ?? null,
                 retry: w.retry,
                 error: w.error,
                 turns: w.turns,
@@ -994,7 +993,8 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
         description:
           `Send a new instruction to a worker. If it is busy the message is queued and runs after the current turn; if it errored this resumes it with full context; if it was interrupted this redirects it.\n` +
           `Re-activates the worker's feedback group (a new group completion notification will fire once all members finish again).\n` +
-          `For agy workers: model must start with "agy/" (e.g. "agy/gemini-3.8-flash-high") to match the worker's backend.`,
+          `For agy workers: model must start with "agy/" (e.g. "agy/gemini-3.8-flash-high") to match the worker's backend.\n` +
+          `The optional 'variant' parameter (low/medium/high/xhigh/max) overrides the worker's reasoning variant for this and future turns (agy workers: only when restarting an errored/interrupted worker).`,
         args: {
           id: tool.schema.string().describe("Worker name or worker id"),
           text: tool.schema.string().describe("Instruction to send"),
@@ -1003,10 +1003,13 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             "  - For OpenCode workers: format 'provider/model-id'.\n" +
             "  - For agy workers: format 'agy/<slug>'. Must match the worker's backend prefix.",
           ),
+          variant: tool.schema.string().optional().describe("Optional reasoning variant override for this and future turns (low/medium/high/xhigh/max). For OpenCode workers it applies immediately to the next prompt; for agy workers it requires a process restart, so it only takes effect when resuming an errored/interrupted worker."),
         },
         async execute(args) {
           const w = resolveWorker(args.id)
           if (!w) return `unknown worker: ${args.id}`
+
+          if (args.variant && !VARIANTS.includes(args.variant as any)) return "failed: 'variant' must be one of: low, medium, high, xhigh, max"
 
           // Validate model prefix compatibility
           if (args.model) {
@@ -1036,6 +1039,8 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             if (wasInterrupted || wasError) {
               // Apply model override if provided
               if (args.model) w.model = args.model
+              // Apply variant override if provided
+              if (args.variant) w.variant = args.variant
               // Need to restart agy process
               if (!w.model) return "agy worker has no model configured"
               const bareModel = w.model.startsWith(AGY_PREFIX) ? w.model.slice(AGY_PREFIX.length) : w.model
@@ -1069,6 +1074,10 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             }
 
             if (wasBusy) {
+              // Variant override: reject if differs (no restart possible while running)
+              if (args.variant && args.variant !== w.variant) {
+                return `cannot change variant for a running agy worker (current: ${w.variant}). Use worker_interrupt first, then worker_send with the new variant to restart it.`
+              }
               // Queue: store for later
               if (!w.agyQueue) w.agyQueue = []
               w.agyQueue.push(args.text)
@@ -1076,6 +1085,10 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
             }
 
             // Idle: send directly
+            // Variant override: reject if differs (no restart possible without process restart)
+            if (args.variant && args.variant !== w.variant) {
+              return `cannot change variant for a running agy worker (current: ${w.variant}). Use worker_interrupt first, then worker_send with the new variant to restart it.`
+            }
             await sendAgyPrompt(w, args.text)
             return "sent; agy worker is running"
           }
@@ -1083,6 +1096,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
           // OpenCode path (existing)
           const wasBusy = w.status === "busy" || w.status === "retry"
           if (args.model) w.model = args.model
+          if (args.variant) w.variant = args.variant
           await sendOpenCode(w, args.text)
           return wasBusy ? "queued; runs after the current turn finishes" : "sent; worker is running"
         },
@@ -1202,6 +1216,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
               title: w.title,
               agent: w.agent,
               model: w.model,
+              variant: w.variant ?? null,
               status: w.status,
               retry: w.retry,
               error: w.error,
