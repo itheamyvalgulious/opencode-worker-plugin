@@ -1,0 +1,32 @@
+{
+  "name": "opencode-worker-plugin",
+  "version": "0.1.0",
+  "description": "Async worker subagent orchestration for OpenCode: spawn, monitor and manage background subagents with feedback groups, timers and a dual backend (OpenCode sessions + agy CLI).",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ithea Valgulious",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itheamyvalgulious/opencode-worker-plugin.git"
+  },
+  "bugs": "https://github.com/itheamyvalgulious/opencode-worker-plugin/issues",
+  "homepage": "https://github.com/itheamyvalgulious/opencode-worker-plugin#readme",
+  "keywords": ["opencode", "opencode-plugin", "subagent", "multi-agent", "orchestration", "worker"],
+  "exports": {
+    "./server": {
+      "import": "./worker-plugin.ts"
+    }
+  },
+  "files": ["worker-plugin.ts", "install.sh", "README.md", "README_EN.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.7"
+  },
+  "devDependencies": {
+    "@opencode-ai/sdk": "^1.18.7",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
