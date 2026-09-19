@@ -14,7 +14,7 @@ const NAME_LIMIT = 40
 const AGY_BINARY = process.env.WORKER_PLUGIN_AGY_BINARY ?? "agy"
 const AGY_PREFIX = "agy/"
 const AGY_MODELS_TIMEOUT = 15_000
-const WORKER_PLUGIN_VERSION = "0.2.0"
+const WORKER_PLUGIN_VERSION = "0.2.1"
 
 type WorkerStatus = "starting" | "busy" | "idle" | "retry" | "error" | "interrupted"
 
@@ -509,6 +509,7 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
         "--output-format", "stream-json",
         "--mode", "accept-edits",
         "--model", modelSlug,
+        "--dangerously-skip-permissions", // workers run non-interactively; auto-approve tool permission requests
       ]
       // Map agent to agy flags
       const agentArgs = mapAgentToAgyArgs(agent)

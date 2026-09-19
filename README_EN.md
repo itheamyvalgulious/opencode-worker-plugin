@@ -158,6 +158,7 @@ The plugin supports an external `agy` CLI as a worker backend. To use it:
 3. Spawn workers with model refs in the format `agy/<slug>`, e.g. `agy/gemini-3.8-flash-high`
 4. Use the `models()` tool to discover available agy model slugs
 5. Variant mapping: low/medium/high → `--effort`; xhigh/max clamped to high
+6. Permission mode: agy workers start with --dangerously-skip-permissions — all tool permission requests are auto-approved, suited for unattended background execution
 
 ## Requirements
 

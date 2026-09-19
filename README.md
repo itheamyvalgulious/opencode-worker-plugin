@@ -158,6 +158,7 @@ bash install.sh --local --uninstall
 3. 使用 `agy/<slug>` 格式的 model 参数 spawn worker，例如 `agy/gemini-3.8-flash-high`
 4. 使用 `models()` 工具发现可用的 agy 模型 slug
 5. variant 映射: low/medium/high → `--effort`; xhigh/max 钳位为 high
+6. 权限模式: agy worker 以 --dangerously-skip-permissions 启动, 所有工具权限请求自动批准, 适合无人值守的后台执行
 
 ## 系统要求
 

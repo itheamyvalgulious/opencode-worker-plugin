@@ -1,6 +1,6 @@
 {
   "name": "opencode-worker-plugin",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Async worker subagent orchestration for OpenCode: spawn, monitor and manage background subagents with feedback groups, timers and a dual backend (OpenCode sessions + agy CLI).",
   "type": "module",
   "license": "MIT",
