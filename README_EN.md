@@ -11,7 +11,7 @@
 
 ---
 
-opencode-worker-plugin turns opencode into an async multi-agent orchestrator. The main (designer) agent can decompose complex tasks into well-defined subtasks, dispatch them to parallel worker subagents, and continue working while they run. The main agent is automatically woken when an entire feedback group completes or a timer fires.
+opencode-worker-plugin turns opencode into an async multi-agent orchestrator. The main agent (e.g. your own `designer` orchestrator) can decompose complex tasks into well-defined subtasks, dispatch them to parallel worker subagents, and continue working while they run. The main agent is automatically woken when an entire feedback group completes or a timer fires.
 
 ## Features
 
@@ -19,10 +19,10 @@ opencode-worker-plugin turns opencode into an async multi-agent orchestrator. Th
 - **Feedback groups** — Group workers together; the parent is woken once when all group members finish
 - **Worker lifecycle management** — Spawn, send, read, interrupt, shutdown, list
 - **Variants** — The required `worker_spawn` `variant` parameter (low/medium/high/xhigh/max) controls reasoning depth on every prompt — no pre-registered tier agents
-- **Timers** — Schedule wake-up notifications for polling or deadlines
+- **Timers** — Schedule wake-up notifications; only for user-requested mid-flight checks on very long tasks (>1h), not for polling
 - **notify_parent** — Workers proactively report blockers to their parent
 - **Dual backend** — Built-in OpenCode sessions (default) and optional external agy CLI processes
-- **Auto agent registration** — Works immediately after install, no manual setup
+- **Auto agent registration** — The `worker` agent is registered automatically; the `designer` orchestrator must be defined by you
 - **Zero-config single-file install** — One command, done
 
 ## Install
@@ -86,12 +86,12 @@ bash install.sh --local --uninstall
 ## Quick start
 
 1. Restart opencode
-2. Switch to the `designer` agent in the agent picker
+2. Switch to your orchestrator agent in the agent picker (e.g. your own `designer` — see [Agents](#agents))
 3. Send a prompt like:
 
 > "Use the designer agent to decompose this task into parallel subtasks: ..."
 
-All tools (`worker_spawn`, etc.) and agents (`worker`, `designer`) appear automatically — no configuration needed.
+All tools (`worker_spawn`, etc.) and the `worker` agent appear automatically — no configuration needed. The `designer` orchestrator must be defined by you (see [Agents](#agents)).
 
 ## Tool reference
 
@@ -132,9 +132,21 @@ The `group` parameter of `worker_spawn` assigns workers to a feedback group. Whe
 
 `set_timer(time, message)` schedules a wake-up: after `time` seconds, the parent agent receives `message`. Non-blocking, returns a timer id immediately.
 
+The injected rules forbid using sleep or timers to wait for workers: when there is nothing to do, end the turn and wait for the feedback-group completion notification. `set_timer` has exactly one allowed use — mid-flight checks on a worker running a very long task (expected >1 hour) when the user explicitly asks to monitor subagent execution. See [Injected system rules](#injected-system-rules).
+
 ### notify_parent
 
 Available only for OpenCode-backend workers. When a worker encounters unclear requirements, blockers, or problems it cannot resolve, it calls `notify_parent(message)` to proactively wake the parent agent and explain the situation.
+
+### Injected system rules
+
+The plugin injects a worker-usage block (`worker-plugin-system`) into every session's system prompt. It covers:
+
+- Interfaces and usage for every tool (`worker_spawn` / `worker_read` / `worker_send` / `worker_interrupt` / `worker_shutdown` / `worker_list` / `models` / `set_timer` / `notify_parent`)
+- Feedback-group strategy: wake once when the whole group reaches a terminal state; a new `worker_send` re-activates the group
+- Waiting rules: never use sleep or `set_timer` to wait for workers; when idle, end the turn and wait for the group completion notification; never poll `worker_list`
+- The only allowed use of `set_timer`: monitoring a worker on a very long task (>1h) when the user explicitly asks for it
+- The block only describes how to use workers — it contains no orchestrator-only directives and no model preferences
 
 ## Agents
 
@@ -142,12 +154,13 @@ The following agents are registered automatically on install:
 
 | Agent | Description |
 |-------|-------------|
-| `worker` | Default worker with general execution capability |
-| `designer` | Orchestrator agent that decomposes tasks and dispatches to workers |
+| `worker` | Default worker with general execution capability (registered by the plugin) |
 
 Variants are no longer controlled via `worker-xx` agents (removed in v0.2.0); pass the required `variant` parameter to `worker_spawn` instead.
 
-If the user has already defined a `worker` or `designer` agent in `opencode.json` or `~/.config/opencode/agent/*.md`, the plugin will not override it.
+The `designer` orchestrator is no longer registered by the plugin. Define it yourself in `~/.config/opencode/agent/designer.md` or the `agent` field of `opencode.json` (mode: primary).
+
+If the user has already defined a `worker` agent in `opencode.json` or `~/.config/opencode/agent/*.md`, the plugin will not override it.
 
 ## Agy Backend (Optional)
 
@@ -180,6 +193,8 @@ Planned. For now, install via the script or by copying the file manually.
 ### Upgrading from an older version?
 
 v0.2.0 removed the `worker-xx` tier agents; use the required `variant` parameter instead (`agent: "worker-max"` → `variant: "max"`).
+
+The plugin no longer auto-registers the `designer` orchestrator; define it yourself (see [Agents](#agents)). If you relied on the auto-registered `designer`, you now need to add one.
 
 ### Does it send my data anywhere?
 

@@ -11,7 +11,7 @@
 
 ---
 
-opencode-worker-plugin 将 opencode 转变为异步多智能体编排器。主 agent (designer) 可以将复杂任务拆分为定义清晰的子任务，并发派发给 worker 子 agent 并行执行，同时主 agent 继续工作。当整个反馈组的所有 worker 都完成时，主 agent 会自动被唤醒并获得完成摘要。Timer 也可以触发定时唤醒。
+opencode-worker-plugin 将 opencode 转变为异步多智能体编排器。主 agent (例如你自行定义的 `designer` 编排 agent) 可以将复杂任务拆分为定义清晰的子任务，并发派发给 worker 子 agent 并行执行，同时主 agent 继续工作。当整个反馈组的所有 worker 都完成时，主 agent 会自动被唤醒并获得完成摘要。Timer 也可以触发定时唤醒。
 
 ## 特性
 
@@ -19,10 +19,10 @@ opencode-worker-plugin 将 opencode 转变为异步多智能体编排器。主 a
 - **反馈组 (feedback groups)** — 将 worker 归入同一组，当组内全部完成时自动通知主 agent
 - **Worker 生命周期管理** — spawn, send, read, interrupt, shutdown, list
 - **推理档位 (variant)** — `worker_spawn` 必填 `variant` 参数 (low/medium/high/xhigh/max) 直接控制每次 prompt 的推理深度, 无需预注册变体 agent
-- **Timer** — 定时唤醒主 agent，用于轮询或截止期限
+- **Timer** — 定时唤醒主 agent; 仅用于用户明确要求监控超长任务 (预计 >1h) 时的中途检查，不用于轮询等待
 - **notify_parent** — worker 主动上报阻塞或问题
 - **双后端** — 内置 OpenCode 子会话 (默认) 和可选的 agy CLI 外部进程
-- **自动 agent 注册** — 安装即用，无需手动配置
+- **自动 agent 注册** — 自动注册 `worker` agent，安装即用; 编排用的 `designer` agent 需自行定义
 - **零配置单文件安装** — 即拿即用
 
 ## 安装
@@ -86,12 +86,12 @@ bash install.sh --local --uninstall
 ## 快速开始
 
 1. 重启 opencode
-2. 在 agent 选择器中选择 `designer` agent
+2. 在 agent 选择器中选择你的编排 agent (例如自行定义的 `designer`，见 [Agents](#agents))
 3. 发送类似以下 prompt:
 
 > "用 designer agent 把这个任务拆成子任务并行执行: ..."
 
-所有工具 (`worker_spawn` 等) 和 agent (`worker`, `designer`) 会自动出现，无需额外配置。
+所有工具 (`worker_spawn` 等) 和 `worker` agent 会自动出现，无需额外配置; 编排用的 `designer` agent 需自行定义 (见 [Agents](#agents))。
 
 ## 工具参考
 
@@ -132,9 +132,21 @@ bash install.sh --local --uninstall
 
 `set_timer(time, message)` 设置一个定时器，在 `time` 秒后将 `message` 投递给主 agent。非阻塞执行，立即返回 timer ID。
 
+注入给 agent 的规则禁止用 sleep 或 timer 等待 worker 完成: 没有可做的事时应直接结束本轮动作，等待反馈组完成通知。`set_timer` 仅允许一种用途 —— 某个 worker 正在执行超长任务 (预计超过 1 小时) 且用户明确要求监控 subagent 执行时，用它在中途查看 worker 是否跑偏。见 [注入的系统规则](#注入的系统规则)。
+
 ### notify_parent
 
 仅 OpenCode 后端 worker 可用。当 worker 遇到不明确的需求、阻塞或无法自行解决的问题时，调用 `notify_parent(message)` 主动唤醒父 agent 并报告情况。
+
+### 注入的系统规则
+
+插件会向每个会话的 system prompt 注入一段 worker 使用说明 (worker-plugin-system)，内容包括:
+
+- 各工具 (`worker_spawn` / `worker_read` / `worker_send` / `worker_interrupt` / `worker_shutdown` / `worker_list` / `models` / `set_timer` / `notify_parent`) 的接口与用法
+- 反馈组策略: 同组全部到达终态时唤醒一次; 重新 `worker_send` 会重置组状态
+- 等待规则: 禁止用 sleep 或 `set_timer` 等待 worker 完成; 无事可做时直接结束本轮动作，静待组完成通知; 禁止轮询 `worker_list` 检查完成
+- `set_timer` 的唯一允许用途: worker 执行超长任务 (预计超过 1 小时) 且用户明确要求监控 subagent 时
+- 该说明只讲 worker 如何使用，不含任何编排者专属指令或模型偏好
 
 ## Agents
 
@@ -142,12 +154,13 @@ bash install.sh --local --uninstall
 
 | Agent | 说明 |
 |-------|------|
-| `worker` | 默认 worker，通用执行能力 |
-| `designer` | 编排者, 负责规划并把子任务派发给 worker 执行 |
+| `worker` | 默认 worker，通用执行能力 (插件自动注册) |
 
 变体不再通过 `worker-xx` agent 控制 (v0.2.0 起移除); 统一通过 `worker_spawn` 的 `variant` 参数指定。
 
-如果用户在 `opencode.json` 或 `~/.config/opencode/agent/*.md` 中已经定义了同名的 `worker` 或 `designer` agent，插件不会覆盖用户的定义。
+编排用的 `designer` agent 不再由插件注册。请在 `~/.config/opencode/agent/designer.md` 或 `opencode.json` 的 `agent` 字段中自行定义 (mode: primary)。
+
+如果用户在 `opencode.json` 或 `~/.config/opencode/agent/*.md` 中已经定义了同名的 `worker` agent，插件不会覆盖用户的定义。
 
 ## Agy 后端 (可选)
 
@@ -180,6 +193,8 @@ opencode 会自动加载 `~/.config/opencode/plugins/` (或项目 `.opencode/plu
 ### 从旧版本升级?
 
 v0.2.0 移除了 `worker-xx` 变体 agent; 改为在 `worker_spawn` 传入必填 `variant` 参数。旧的 `agent: "worker-max"` 写法改为 `variant: "max"`。
+
+插件不再自动注册 `designer` 编排 agent; 请自行定义 (见 [Agents](#agents))。若你此前依赖自动注册的 `designer`，升级后需要自己补一个。
 
 ### 它会发送我的数据到外部吗？
 

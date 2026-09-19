@@ -6,7 +6,6 @@ import { createInterface } from "node:readline"
 // Valid values for the variant parameter (worker_spawn / worker_send)
 const VARIANTS = ["low", "medium", "high", "xhigh", "max"] as const
 const DEFAULT_AGENT = "worker"
-const DESIGNER_AGENT = "designer"
 const PRIMARY_BASE = "build"
 const PART_LIMIT = 300
 const DEFAULT_TAIL = 6
@@ -142,20 +141,34 @@ const WORKER_RULES = `<worker-plugin-system>
 ## Worker Subagent System
 
 You have async worker subagents via the worker-plugin:
-- \`models()\` — List all available models from both OpenCode and agy backends. Returns grouped entries in a format directly usable with \`worker_spawn.model\`. OpenCode models as \`provider/model\` (e.g. \`epicrouter/deepseek-v4-flash\`), agy models as \`agy/<slug>\` (e.g. \`agy/gemini-3.8-flash-high\`). No API calls or token consumption.
-- \`worker_spawn(prompt, title, group, model, agent?)\` — Spawn a worker, returns immediately with its semantic name. \`title\` is a short unique name you choose (semantic, e.g. "auth-refactor"). \`group\` is a required feedback group id: when ALL workers of a group finish, you are woken once with a summary of which workers completed.
+- \`models()\` — List all available models from both OpenCode and agy backends. Returns grouped entries in a format directly usable with \`worker_spawn.model\`. OpenCode models use 'provider/model' (e.g. \`epicrouter/deepseek-v4-flash\`); agy models use \`agy/<slug>\` (e.g. \`agy/gemini-3.8-flash-high\`). No API calls or token consumption.
+- \`worker_spawn(prompt, title, group, model, variant, agent?)\` — Spawn a writable worker subagent and give it an initial instruction. NON-BLOCKING: returns immediately with the worker's semantic name. \`title\` is a short unique name you choose (semantic, e.g. "auth-refactor"); it is the id you use in all other worker tools. \`group\`, \`model\` and \`variant\` are required.
   - **OpenCode backend (default):** \`model\` format \`provider/model-id\` (e.g. \`epicrouter/deepseek-v4-flash\`), creates an internal sub-session.
-  - **External agy backend:** \`model\` starts with \`agy/\` followed by a bare model slug (e.g. \`agy/gemini-3.8-flash-high\`). The worker runs as a local child process via the Antigravity CLI (\`agy\`). \`'variant'\` is required and must be one of low/medium/high/xhigh/max — it controls the worker's reasoning effort on every prompt (agy workers: mapped to --effort, xhigh/max clamped to high). \`'agent'\` selects the worker agent (default \"worker\").
-- \`worker_read(name)\` / \`worker_send(name, text)\` / \`worker_interrupt(name)\` / \`worker_shutdown(name)\` / \`worker_list()\` — Manage workers. All accept the semantic name or the worker id.
+  - **External agy backend:** \`model\` starts with \`agy/\` followed by a bare model slug (e.g. \`agy/gemini-3.8-flash-high\`). The worker runs as a local child process via the Antigravity CLI (\`agy\`). \`agent\` selects the worker agent (default "worker").
+  - \`variant\` (low / medium / high / xhigh / max) controls the reasoning effort for every prompt of that worker. For agy workers xhigh/max are clamped to high.
+- \`worker_read(name)\` / \`worker_send(name, text)\` / \`worker_interrupt(name)\` / \`worker_shutdown(name)\` / \`worker_list()\` — Manage workers. All accept the semantic name or the worker id. Use worker_read to inspect a worker's conversation; worker_send to queue more instructions; worker_interrupt to stop the current turn; worker_shutdown to close it.
 - \`set_timer(time, message)\` — Async: after \`time\` seconds, wake this session once with \`message\`.
 - Workers can call \`notify_parent(message)\` to proactively wake you (OpenCode workers only; agy workers cannot call this tool).
 
+## Feedback groups
+
+\`worker_spawn\` 的 \`group\` 参数把一批 worker 归入同一反馈组:
+- 同组所有 worker 都到达终态 (idle / error / interrupted) 后, 你被唤醒一次, 通知里列出各 worker 的名称与状态.
+- 需要等一批独立子任务全部完成后再继续时, 给它们相同的 group.
+- 组通知发出后, 对任一成员再次 \`worker_send\` 会重置组状态, 全员再次完成后会再通知一次.
+- 单个 worker 出错只静默记录, 不唤醒你; 全组到达终态时统一汇报.
+
+## Waiting rules (强制)
+
+- 禁止用 sleep 或 \`set_timer\` 等待 worker 完成.
+- 当前没有可做的事时, 直接结束本轮动作, 静待组完成通知唤醒; 不要空转等待.
+- 禁止轮询 \`worker_list\` 来检查完成情况.
+- \`set_timer\` 只有一种允许用途: 某个 worker 正在执行超长任务 (预计超过 1 小时), 且用户明确要求监控 subagent 执行时, 用它在中途查看该 worker 是否跑偏. 其他任何场景都不得使用 \`set_timer\`.
+
 ## Rules
 
-- NEVER poll \`worker_list\` to check completion. Group completion and timers wake you automatically.
-- NEVER wait idle while workers run. Continue productive work.
 - Worker messages arrive as synthetic system notifications (\`<worker-notification>\`), not as user messages.
-- Batch tasks that should only notify when ALL are done → same \`group\`.
+- Batch tasks that should only notify when ALL are done → give them the same \`group\`.
 - Workers: if you encounter unclear requirements, blockers, or problems you cannot resolve on your own, use \`notify_parent(message)\` to proactively wake the parent agent and explain the issue. Do not guess or make assumptions when the task is underspecified.
 - agy workers: \`model\` must start with \`agy/\` (e.g. \`agy/gemini-3.8-flash-high\`). Do NOT pass OpenCode \`provider/model\` format to agy workers. Use \`models()\` to discover available models for both backends without guessing.
 </worker-plugin-system>`
@@ -679,16 +692,6 @@ export const WorkerPlugin: Plugin = async ({ client }) => {
           ? { ...fallback, mode: "subagent", description }
           : { mode: "subagent", description }
         knownAgents.add(DEFAULT_AGENT)
-      }
-
-      if (!cfg.agent[DESIGNER_AGENT]) {
-        const primaryBase = cfg.agent[PRIMARY_BASE] ?? cfg.agent[DEFAULT_AGENT]
-        const description =
-          "Designer/orchestrator agent. Plans work, splits it into fully-specified subtasks, and dispatches them asynchronously through the worker-plugin tools (worker_spawn / worker_send / worker_read / worker_interrupt / worker_shutdown / worker_list / models, set_timer, notify_parent) instead of blocking subagent task calls. Spawn workers with a unique semantic title, a required model name, a required variant (low/medium/high/xhigh/max), and a required feedback group id; continue productive work; you are woken automatically when a whole group finishes or a timer fires."
-        cfg.agent[DESIGNER_AGENT] = primaryBase
-          ? { ...primaryBase, mode: "primary", description }
-          : { mode: "primary", description }
-        knownAgents.add(DESIGNER_AGENT)
       }
     },
 
